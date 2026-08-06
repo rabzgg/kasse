@@ -89,6 +89,16 @@ input{font-family:inherit}
 .entry-bot{display:flex;justify-content:space-between;gap:10px;margin-top:4px;font-size:12px;color:var(--muted)}
 .entry-meta{font-family:var(--mono);white-space:nowrap}
 .entry-share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:5px;padding-top:5px;border-top:1px solid var(--ink3)}
+.entry-author{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);margin-top:5px;opacity:.75}
+.entry-author-warn{color:var(--owe);opacity:1}
+.entry-sel{cursor:pointer;user-select:none}
+.entry-sel:hover{background:var(--ink3)}
+.entry-on{background:var(--ink3);box-shadow:inset 0 0 0 1px var(--paper)}
+.entry-box{width:22px;height:22px;flex-shrink:0;align-self:center;margin-left:12px;border:1px solid var(--muted);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+.entry-on .entry-box{border-color:var(--paper);background:var(--paper);color:var(--ink)}
+.danger{position:sticky;bottom:60px;background:var(--ink);padding:12px 0 18px;margin-top:-8px}
+.danger-txt{font-size:13px;line-height:1.6;color:var(--muted);background:var(--ink2);box-shadow:inset 3px 0 0 var(--owe);padding:13px 14px;margin-bottom:10px}
+.danger-txt b{color:var(--paper)}
 .entry-del{position:absolute;top:6px;right:8px;font-size:20px;line-height:1;color:var(--muted)}
 .entry-del:hover{color:var(--owe)}
 
@@ -238,10 +248,13 @@ function App() {
     else { setStatus("Tersinkron"); load(); }
   };
 
-  const removeEntry = async (id) => {
-    setEntries((cur) => cur.filter((x) => x.id !== id));
-    const { error } = await db.from("entries").delete().eq("id", id);
-    if (error) { setStatus("Gagal"); load(); }
+  const removeMany = async (ids) => {
+    if (!ids || !ids.length) return;
+    setEntries((cur) => cur.filter((x) => !ids.includes(x.id)));
+    setStatus("Menghapus");
+    const { error } = await db.from("entries").delete().in("id", ids);
+    if (error) { lastError = error.message || String(error); setStatus("Gagal"); load(); }
+    else { setStatus("Tersinkron"); load(); }
   };
 
   const bal = computeBalances(entries);
@@ -255,7 +268,7 @@ function App() {
       {view === "home" && <Home me={me} bal={bal} pairs={pairs} entries={entries} onGo={setView} />}
       {view === "expense" && <ExpenseForm me={me} onSave={(e) => { addEntry(e); setView("home"); }} onCancel={() => setView("home")} />}
       {view === "payback" && <PaybackForm me={me} pairs={pairs} onSave={(e) => { addEntry(e); setView("home"); }} onCancel={() => setView("home")} />}
-      {view === "history" && <History entries={entries} onDelete={removeEntry} onBack={() => setView("home")} />}
+      {view === "history" && <History entries={entries} onDeleteMany={removeMany} onBack={() => setView("home")} />}
       {view === "settle" && <Settle bal={bal} pairs={pairs} entries={entries} onBack={() => setView("home")} />}
       <Nav view={view} onGo={setView} />
     </div>
@@ -343,13 +356,21 @@ function Home({ me, bal, pairs, entries, onGo }) {
   );
 }
 
-function EntryRow({ e, me, onDelete }) {
+function EntryRow({ e, me, selectable, selected, onToggle, showAuthor }) {
   const isPay = e.kind === "payback";
   const who = e.who || [];
   const share = who.includes(me) ? e.amount / who.length : 0;
+  const mismatch = e.by_user && e.by_user !== e.payer;
   return (
-    <div className="entry">
+    <div
+      className={"entry" + (selectable ? " entry-sel" : "") + (selected ? " entry-on" : "")}
+      onClick={selectable ? () => onToggle(e.id) : undefined}
+      role={selectable ? "button" : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      onKeyDown={selectable ? (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onToggle(e.id); } } : undefined}
+    >
       <div className="entry-bar" style={{ background: colorOf(e.payer) }} />
+      {selectable && <div className="entry-box">{selected ? "✓" : ""}</div>}
       <div className="entry-body">
         <div className="entry-top">
           <span className="entry-note">{e.note || (isPay ? "Bayar utang" : "Tanpa catatan")}</span>
@@ -365,8 +386,12 @@ function EntryRow({ e, me, onDelete }) {
           <span className="entry-meta">{e.cat && !isPay ? e.cat + " · " : ""}{dateLabel(e.ts)}</span>
         </div>
         {!isPay && share > 0 && <div className="entry-share">Bagian kamu {eur(share)}</div>}
+        {showAuthor && (
+          <div className={"entry-author" + (mismatch ? " entry-author-warn" : "")}>
+            {e.by_user ? (mismatch ? "Diinput " + e.by_user + ", bukan " + e.payer : "Diinput " + e.by_user) : "Diinput entah siapa"}
+          </div>
+        )}
       </div>
-      {onDelete && <button className="entry-del" onClick={() => onDelete(e.id)} aria-label="Hapus">×</button>}
     </div>
   );
 }
@@ -468,19 +493,62 @@ function PaybackForm({ me, pairs, onSave, onCancel }) {
   );
 }
 
-function History({ entries, onDelete, onBack }) {
+function History({ entries, onDeleteMany, onBack }) {
   const [filter, setFilter] = useState("Semua");
+  const [picking, setPicking] = useState(false);
+  const [sel, setSel] = useState([]);
+  const [confirming, setConfirming] = useState(false);
   const list = filter === "Semua" ? entries : entries.filter((e) => e.payer === filter);
   const total = entries.filter((e) => e.kind === "expense").reduce((s, e) => s + e.amount, 0);
+  const selTotal = entries.filter((e) => sel.includes(e.id)).reduce((s, e) => s + e.amount, 0);
+
+  const toggle = (id) => { setConfirming(false); setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); };
+  const exit = () => { setPicking(false); setSel([]); setConfirming(false); };
+  const allShown = list.length > 0 && list.every((e) => sel.includes(e.id));
+  const toggleAll = () => { setConfirming(false); setSel(allShown ? [] : list.map((e) => e.id)); };
+
   return (
     <div className="page">
       <h2 className="ph">Riwayat</h2>
       <div className="phelp">Total pengeluaran WG tercatat <b>{eur(total)}</b> dari {entries.length} catatan.</div>
-      <div className="chips">{["Semua", ...PEOPLE.map((p) => p.id)].map((f) => <button key={f} className={"chip " + (filter === f ? "chip-on" : "")} onClick={() => setFilter(f)}>{f}</button>)}</div>
-      <div className="feed" style={{ marginTop: 16 }}>
-        {list.length === 0 && <div className="empty-line">Kosong.</div>}
-        {list.map((e) => <EntryRow key={e.id} e={e} me="__none__" onDelete={onDelete} />)}
+
+      <div className="chips">
+        {["Semua", ...PEOPLE.map((p) => p.id)].map((f) => (
+          <button key={f} className={"chip " + (filter === f ? "chip-on" : "")} onClick={() => { setFilter(f); setConfirming(false); }}>{f}</button>
+        ))}
       </div>
+
+      <div className="sec-head" style={{ marginTop: 20 }}>
+        <span>{picking ? sel.length + " dipilih" : list.length + " catatan"}</span>
+        <span style={{ display: "flex", gap: 14 }}>
+          {picking && <button className="link" onClick={toggleAll}>{allShown ? "Batal semua" : "Pilih semua"}</button>}
+          <button className="link" onClick={picking ? exit : () => setPicking(true)}>{picking ? "Selesai" : "Pilih"}</button>
+        </span>
+      </div>
+
+      <div className="feed">
+        {list.length === 0 && <div className="empty-line">Kosong.</div>}
+        {list.map((e) => (
+          <EntryRow key={e.id} e={e} me="__none__" showAuthor
+            selectable={picking} selected={sel.includes(e.id)} onToggle={toggle} />
+        ))}
+      </div>
+
+      {picking && sel.length > 0 && (
+        <div className="danger">
+          {confirming ? (
+            <>
+              <div className="danger-txt">Hapus <b>{sel.length}</b> catatan senilai <b>{eur(selTotal)}</b>? Ini permanen dan semua saldo bakal ikut berubah.</div>
+              <div className="cta-pair" style={{ marginBottom: 0 }}>
+                <button className="cta cta-warn" onClick={() => { onDeleteMany(sel); exit(); }}>Ya, hapus</button>
+                <button className="cta" onClick={() => setConfirming(false)}>Batal</button>
+              </div>
+            </>
+          ) : (
+            <button className="cta cta-warn" onClick={() => setConfirming(true)}>Hapus {sel.length} catatan ({eur(selTotal)})</button>
+          )}
+        </div>
+      )}
       <button className="cta" onClick={onBack}>Kembali</button>
     </div>
   );
