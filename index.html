@@ -106,6 +106,9 @@ input{font-family:inherit}
 .chip-on{background:var(--ink3);color:var(--paper);box-shadow:inset 0 -2px 0 var(--c,var(--paper))}
 .preview{font-family:var(--mono);font-size:13px;color:var(--muted);background:var(--ink2);padding:13px 14px;margin:22px 0 18px;line-height:1.6}
 .preview b{color:var(--paper)}
+.preview-warn{box-shadow:inset 3px 0 0 var(--owe)}
+.cta-warn{background:var(--owe);color:#fff;font-weight:600}
+.cta-warn:hover{background:#B03A26}
 .hint{width:100%;text-align:left;font-size:12px;color:var(--muted);background:var(--ink2);padding:11px 14px;margin-top:10px;text-decoration:underline;text-underline-offset:3px}
 
 .nav{position:fixed;bottom:0;left:0;right:0;max-width:460px;margin:0 auto;display:flex;background:var(--ink2);border-top:1px solid var(--ink3);padding-bottom:env(safe-area-inset-bottom)}
@@ -121,11 +124,11 @@ input{font-family:inherit}
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
 
 <script type="text/babel" data-type="module">
 /* ==================================================================
-   ISI DUA BARIS INI. Ambil dari Supabase > Settings > API Keys.
+   Koneksi Supabase. Kalau key dirotate, ganti baris kedua doang.
    ================================================================== */
 const SUPABASE_URL = "https://gfywgqsffnbvrourdkds.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_drKcFkCa53PvuQad6GSORg_ZEgU9ZPV";
@@ -133,8 +136,9 @@ const SUPABASE_ANON_KEY = "sb_publishable_drKcFkCa53PvuQad6GSORg_ZEgU9ZPV";
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-const configured = SUPABASE_ANON_KEY.indexOf("PASTE_") !== 0;
+const configured = SUPABASE_ANON_KEY.length > 20 && SUPABASE_URL.indexOf("https://") === 0;
 const db = configured ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+let lastError = "";
 
 const PEOPLE = [
   { id: "Daffa", tag: "DF", color: "#E0A32E" },
@@ -207,7 +211,8 @@ function App() {
   const load = useCallback(async () => {
     if (!db) { setStatus("Belum diset"); return; }
     const { data, error } = await db.from("entries").select("*").order("ts", { ascending: false });
-    if (error) { setStatus("Gagal"); console.error(error); return; }
+    if (error) { lastError = error.message || String(error); setStatus("Gagal"); console.error(error); return; }
+    lastError = "";
     setEntries(data.map((r) => ({ ...r, amount: Number(r.amount) })));
     setStatus("Tersinkron");
   }, []);
@@ -273,9 +278,9 @@ function Gate({ onPick, status }) {
             </button>
           ))}
         </div>
-        {!configured && (
+        {status === "Gagal" && (
           <div className="gate-err">
-            <b>Supabase belum diisi.</b> Buka <code>index.html</code>, ganti <code>SUPABASE_URL</code> dan <code>SUPABASE_ANON_KEY</code> di baris paling atas script, lalu push lagi.
+            <b>Ga bisa nyambung ke database.</b><br />{lastError || "Cek koneksi internet."}
           </div>
         )}
         <div className="gate-foot">{status}</div>
@@ -409,26 +414,54 @@ function PaybackForm({ me, pairs, onSave, onCancel }) {
   const others = PEOPLE.filter((p) => p.id !== me);
   const [to, setTo] = useState(others[0].id);
   const [amount, setAmount] = useState("");
-  const suggestion = pairs.find((p) => p.from === me && p.to === to);
+  const [confirmed, setConfirmed] = useState(false);
+  const owed = (pairs.find((p) => p.from === me && p.to === to) || {}).amount || 0;
   const val = parseFloat(String(amount).replace(",", ".")) || 0;
+  const after = owed - val;
+  const over = val > owed + 0.005;
+  const needConfirm = over && val > 0;
+
+  const pickTo = (id) => { setTo(id); setConfirmed(false); };
+  const typeAmt = (v) => { setAmount(v); setConfirmed(false); };
+
+  let preview = null;
+  if (val > 0) {
+    if (owed < 0.005) {
+      preview = <>Kamu <b>ga punya utang</b> ke {to}. Kalau disimpan, {to} yang jadi utang <b>{eur(val)}</b> ke kamu.</>;
+    } else if (over) {
+      preview = <>Utang kamu ke {to} cuma <b>{eur(owed)}</b>. Kelebihan <b>{eur(val - owed)}</b> bakal balik jadi utang {to} ke kamu.</>;
+    } else if (Math.abs(after) < 0.005) {
+      preview = <>Pas. Utang kamu ke {to} jadi <b>nol</b>.</>;
+    } else {
+      preview = <>Sisa utang kamu ke {to} jadi <b>{eur(after)}</b>.</>;
+    }
+  }
+
   return (
     <div className="page">
       <h2 className="ph">Catat bayar utang</h2>
       <p className="phelp">Pakai ini kalau kamu udah transfer atau kasih cash ke salah satu anak WG.</p>
       <label className="fl">Bayar ke siapa</label>
-      <div className="chips">{others.map((p) => <button key={p.id} className={"chip " + (to === p.id ? "chip-on" : "")} style={to === p.id ? { "--c": p.color } : {}} onClick={() => setTo(p.id)}>{p.id}</button>)}</div>
+      <div className="chips">{others.map((p) => <button key={p.id} className={"chip " + (to === p.id ? "chip-on" : "")} style={to === p.id ? { "--c": p.color } : {}} onClick={() => pickTo(p.id)}>{p.id}</button>)}</div>
       <label className="fl">Berapa</label>
       <div className="amt-wrap">
         <span className="amt-cur">€</span>
-        <input className="amt-input" inputMode="decimal" placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <input className="amt-input" inputMode="decimal" placeholder="0,00" value={amount} onChange={(e) => typeAmt(e.target.value)} />
       </div>
-      {suggestion && <button className="hint" onClick={() => setAmount(suggestion.amount.toFixed(2).replace(".", ","))}>Utang kamu ke {to} sekarang {eur(suggestion.amount)}. Pakai angka ini</button>}
+      {owed >= 0.005
+        ? <button className="hint" onClick={() => typeAmt(owed.toFixed(2).replace(".", ","))}>Utang kamu ke {to} sekarang {eur(owed)}. Pakai angka ini</button>
+        : <div className="hint" style={{ textDecoration: "none", cursor: "default" }}>Kamu lagi ga punya utang ke {to}.</div>}
+      {preview && <div className={"preview " + (needConfirm ? "preview-warn" : "")}>{preview}</div>}
       <div className="cta-pair">
-        <button className="cta cta-main" disabled={val <= 0} onClick={() => onSave({
-          id: "p" + Date.now() + Math.random().toString(36).slice(2, 6),
-          kind: "payback", payer: me, who: [to], amount: Math.round(val * 100) / 100,
-          note: "Bayar utang", cat: "", ts: Date.now(), by_user: me,
-        })}>Simpan</button>
+        {needConfirm && !confirmed ? (
+          <button className="cta cta-warn" onClick={() => setConfirmed(true)}>Gua sadar, ini kelebihan bayar</button>
+        ) : (
+          <button className="cta cta-main" disabled={val <= 0} onClick={() => onSave({
+            id: "p" + Date.now() + Math.random().toString(36).slice(2, 6),
+            kind: "payback", payer: me, who: [to], amount: Math.round(val * 100) / 100,
+            note: over ? "Bayar utang (lebih)" : "Bayar utang", cat: "", ts: Date.now(), by_user: me,
+          })}>Simpan</button>
+        )}
         <button className="cta" onClick={onCancel}>Batal</button>
       </div>
     </div>
