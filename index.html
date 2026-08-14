@@ -117,6 +117,9 @@ input{font-family:inherit}
 .preview{font-family:var(--mono);font-size:13px;color:var(--muted);background:var(--ink2);padding:13px 14px;margin:22px 0 18px;line-height:1.6}
 .preview b{color:var(--paper)}
 .preview-warn{box-shadow:inset 3px 0 0 var(--owe)}
+.note{font-size:12px;line-height:1.65;color:#5C564A;background:#E3DED2;box-shadow:inset 3px 0 0 var(--line);padding:11px 13px;margin-top:14px}
+.note b{color:var(--ink)}
+.note-light{margin:0 0 12px}
 .cta-warn{background:var(--owe);color:#fff;font-weight:600}
 .cta-warn:hover{background:#B03A26}
 .hint{width:100%;text-align:left;font-size:12px;color:var(--muted);background:var(--ink2);padding:11px 14px;margin-top:10px;text-decoration:underline;text-underline-offset:3px}
@@ -267,7 +270,7 @@ function App() {
       <Header me={me} status={status} onSwitch={unpick} onSync={load} />
       {view === "home" && <Home me={me} bal={bal} pairs={pairs} entries={entries} onGo={setView} />}
       {view === "expense" && <ExpenseForm me={me} onSave={(e) => { addEntry(e); setView("home"); }} onCancel={() => setView("home")} />}
-      {view === "payback" && <PaybackForm me={me} pairs={pairs} onSave={(e) => { addEntry(e); setView("home"); }} onCancel={() => setView("home")} />}
+      {view === "payback" && <PaybackForm me={me} pairs={pairs} bal={bal} onSave={(e) => { addEntry(e); setView("home"); }} onCancel={() => setView("home")} />}
       {view === "history" && <History entries={entries} onDeleteMany={removeMany} onBack={() => setView("home")} />}
       {view === "settle" && <Settle bal={bal} pairs={pairs} entries={entries} onBack={() => setView("home")} />}
       <Nav view={view} onGo={setView} />
@@ -318,29 +321,47 @@ function Home({ me, bal, pairs, entries, onGo }) {
   const net = bal[me] || 0;
   const owedToMe = pairs.filter((p) => p.to === me);
   const iOwe = pairs.filter((p) => p.from === me);
-  const flat = Math.abs(net) < 0.005;
+  const totalOwe = iOwe.reduce((s, p) => s + p.amount, 0);
+  const totalGet = owedToMe.reduce((s, p) => s + p.amount, 0);
+  const clean = totalOwe < 0.005 && totalGet < 0.005;
+  const bothWays = totalOwe >= 0.005 && totalGet >= 0.005;
+
+  const hero = totalOwe >= 0.005 ? totalOwe : totalGet;
+  const heroColor = clean ? "var(--muted)" : totalOwe >= 0.005 ? "var(--owe)" : "var(--get)";
+  const heroLabel = clean
+    ? "Aman, ga ada utang piutang"
+    : totalOwe >= 0.005
+    ? "Yang harus kamu bayar"
+    : "Yang harus dibayar ke kamu";
+
   return (
     <div className="page">
       <div className="slip">
         <div className="slip-head"><span>POSISI KAMU</span><span>{new Date().toLocaleDateString("de-DE")}</span></div>
-        <div className="big" style={{ color: flat ? "var(--muted)" : net >= 0 ? "var(--get)" : "var(--owe)" }}>{flat ? "€0,00" : eur(net)}</div>
-        <div className="big-label">{flat ? "Aman, ga ada utang piutang" : net > 0 ? "Kamu nalangin lebih, harus diganti" : "Kamu masih nunggak"}</div>
+        <div className="big" style={{ color: heroColor }}>{clean ? "€0,00" : eur(hero)}</div>
+        <div className="big-label">{heroLabel}</div>
         <div className="perf" />
         <div className="rows">
-          {owedToMe.length === 0 && iOwe.length === 0 && <div className="empty-line">Belum ada yang perlu ditagih.</div>}
-          {owedToMe.map((p, i) => (
-            <div className="row" key={"a" + i}>
-              <span className="row-l"><b style={{ color: colorOf(p.from) }}>{p.from}</b> bayar ke kamu</span>
-              <span className="row-r get">{eur(p.amount)}</span>
-            </div>
-          ))}
+          {clean && <div className="empty-line">Belum ada yang perlu ditagih.</div>}
           {iOwe.map((p, i) => (
             <div className="row" key={"b" + i}>
               <span className="row-l">Kamu bayar ke <b style={{ color: colorOf(p.to) }}>{p.to}</b></span>
               <span className="row-r owe">{eur(p.amount)}</span>
             </div>
           ))}
+          {owedToMe.map((p, i) => (
+            <div className="row" key={"a" + i}>
+              <span className="row-l"><b style={{ color: colorOf(p.from) }}>{p.from}</b> bayar ke kamu</span>
+              <span className="row-r get">{eur(p.amount)}</span>
+            </div>
+          ))}
         </div>
+        {bothWays && (
+          <div className="note">
+            Bayar <b>{eur(totalOwe)}</b> penuh, jangan dikurangi duit yang belum kamu terima.
+            Selisih bersih kamu {net >= 0 ? "+" : "−"}{eur(net)}, tapi itu cuma hitungan di atas kertas.
+          </div>
+        )}
         <div className="slip-notch" />
       </div>
       <div className="cta-pair">
@@ -435,7 +456,7 @@ function ExpenseForm({ me, onSave, onCancel }) {
   );
 }
 
-function PaybackForm({ me, pairs, onSave, onCancel }) {
+function PaybackForm({ me, pairs, bal, onSave, onCancel }) {
   const others = PEOPLE.filter((p) => p.id !== me);
   const [to, setTo] = useState(others[0].id);
   const [amount, setAmount] = useState("");
@@ -445,6 +466,9 @@ function PaybackForm({ me, pairs, onSave, onCancel }) {
   const after = owed - val;
   const over = val > owed + 0.005;
   const needConfirm = over && val > 0;
+
+  const myNet = Math.abs(bal[me] || 0);
+  const netTrap = val > 0 && !over && owed - val > 0.005 && Math.abs(val - myNet) < 0.02 && Math.abs(owed - myNet) > 0.02;
 
   const pickTo = (id) => { setTo(id); setConfirmed(false); };
   const typeAmt = (v) => { setAmount(v); setConfirmed(false); };
@@ -457,6 +481,8 @@ function PaybackForm({ me, pairs, onSave, onCancel }) {
       preview = <>Utang kamu ke {to} cuma <b>{eur(owed)}</b>. Kelebihan <b>{eur(val - owed)}</b> bakal balik jadi utang {to} ke kamu.</>;
     } else if (Math.abs(after) < 0.005) {
       preview = <>Pas. Utang kamu ke {to} jadi <b>nol</b>.</>;
+    } else if (netTrap) {
+      preview = <>Angka ini kayaknya dari selisih bersih kamu, bukan utang ke {to}. Utang kamu ke {to} <b>{eur(owed)}</b>. Kalau cuma bayar {eur(val)}, sisanya <b>{eur(after)}</b> masih nyangkut ke {to} padahal duitnya belum tentu dia terima dari yang lain.</>;
     } else {
       preview = <>Sisa utang kamu ke {to} jadi <b>{eur(after)}</b>.</>;
     }
@@ -476,7 +502,7 @@ function PaybackForm({ me, pairs, onSave, onCancel }) {
       {owed >= 0.005
         ? <button className="hint" onClick={() => typeAmt(owed.toFixed(2).replace(".", ","))}>Utang kamu ke {to} sekarang {eur(owed)}. Pakai angka ini</button>
         : <div className="hint" style={{ textDecoration: "none", cursor: "default" }}>Kamu lagi ga punya utang ke {to}.</div>}
-      {preview && <div className={"preview " + (needConfirm ? "preview-warn" : "")}>{preview}</div>}
+      {preview && <div className={"preview " + (needConfirm || netTrap ? "preview-warn" : "")}>{preview}</div>}
       <div className="cta-pair">
         {needConfirm && !confirmed ? (
           <button className="cta cta-warn" onClick={() => setConfirmed(true)}>Gua sadar, ini kelebihan bayar</button>
@@ -573,6 +599,13 @@ function Settle({ bal, pairs, entries, onBack }) {
         </div>
         <div className="perf" />
         <div className="slip-head"><span>CARA TERCEPAT LUNAS</span><span>{min.length} transfer</span></div>
+        {min.length > 0 && (
+          <div className="note note-light">
+            Ini paket sekali jalan. Semua transfer di bawah harus jalan barengan.
+            Kalau cuma sebagian yang bayar, hitungannya jadi ngaco dan ada yang kena nomboki.
+            Kalau ga bisa barengan, pakai rincian per pasangan di bawah.
+          </div>
+        )}
         <div className="rows">
           {min.length === 0 && <div className="empty-line">Semua udah impas.</div>}
           {min.map((t, i) => (
@@ -583,7 +616,7 @@ function Settle({ bal, pairs, entries, onBack }) {
           ))}
         </div>
         <div className="perf" />
-        <div className="slip-head"><span>RINCIAN PER PASANGAN</span><span /></div>
+        <div className="slip-head"><span>RINCIAN PER PASANGAN</span><span>AMAN DICICIL</span></div>
         <div className="rows">
           {pairs.length === 0 && <div className="empty-line">Bersih.</div>}
           {pairs.map((t, i) => (
